@@ -14,6 +14,124 @@ import os
 import torch
 
 
+def preprocess_raw():
+
+    """Preprocess (crop only) and generated pairs of fixed and moving images
+    """
+    source_path = '/data1/jungsoo/data/2023-01-16-reg-data/h5_resize'
+    save_directory = \
+        '/home/alicia/data_personal/regnet_dataset/2023-01-16_raw_crop-v1'
+    with open('jungsoo_registration_problems.json', 'r') as f:
+        registration_problem_dict = json.load(f)
+
+    for dataset_type_n_name, problems in registration_problem_dict.items():
+
+        dataset_type, dataset_name = dataset_type_n_name.split('/')
+        save_path = f'{save_directory}/{dataset_type}/{dataset_name}'
+
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+
+        hdf5_m_file = h5py.File(f'{save_path}/moving_images.h5', 'w')
+        hdf5_f_file = h5py.File(f'{save_path}/fixed_images.h5', 'w')
+
+        dataset_path = locate_directory(dataset_name)
+
+        for problem in problems:
+
+            t_moving, t_fixed = problem.split('to')
+            t_moving_4 = t_moving.zfill(4)
+            t_fixed_4 = t_fixed.zfill(4)
+            fixed_image_path = glob.glob(
+                    f'{dataset_path}/NRRD_filtered/*_t{t_fixed_4}_ch2.nrrd'
+            )[0]
+            moving_image_path = glob.glob(
+                    f'{dataset_path}/NRRD_filtered/*_t{t_moving_4}_ch2.nrrd'
+            )[0]
+
+            fixed_image_T = get_image_T(fixed_image_path)
+            fixed_image_median = np.median(fixed_image_T)
+            moving_image_T = get_image_T(moving_image_path)
+            moving_image_median = np.median(moving_image_T)
+
+            resized_fixed_image_xyz = crop(fixed_image_T,
+                        fixed_image_median)
+            resized_moving_image_xyz = crop(moving_image_T,
+                        moving_image_median)
+
+            hdf5_m_file.create_dataset(f'{t_moving}to{t_fixed}',
+                    data = resized_moving_image_xyz)
+            hdf5_f_file.create_dataset(f'{t_moving}to{t_fixed}',
+                    data = resized_fixed_image_xyz)
+
+        hdf5_m_file.close()
+        hdf5_f_file.close()
+
+
+def preprocess_elastix():
+
+    """Preprocess a selected pairs of raw fixed and moving images from each
+    dataset (e.g. 'train/2022-07-26-01', 'test/2022-04-14-04'); then assemble
+    them into .h5 files (e.g. 'train/2022-07-26-01/fixed_images.h5',
+    'test/2022-04-14-04/moving_images.h5').
+
+    Specifically, preprocessing consists of the following steps:
+        - filter out the background pixels;
+        - cropped to the target size (208, 96, 56);
+        - transform the image with eulerElastix
+    """
+
+    elastix_failures = ['2022-01-17-01/908to1018', '2022-07-26-01/107to815']
+    source_path = '/data1/jungsoo/data/2023-01-16-reg-data/h5_resize'
+    save_directory = \
+        '/home/alicia/data_personal/regnet_dataset/2023-01-16_raw_crop-v1'
+
+    for ds_type, ds_names in DATASETS_SPLIT_DICT.items():
+
+        for ds_name in tqdm(ds_names):
+            src_file = f'{source_path}/{ds_type}/{ds_name}'
+            with h5py.File(f'{src_file}/fixed_images.h5', 'r') as f:
+                problems = list(f.keys())
+
+            save_path = f'{save_directory}/{ds_type}/{ds_name}'
+            if not os.path.exists(save_path):
+                os.mkdir(save_path)
+
+            hdf5_m_file = h5py.File(f'{save_path}/moving_images.h5', 'w')
+            hdf5_f_file = h5py.File(f'{save_path}/fixed_images.h5', 'w')
+
+            for problem in problems:
+                t_moving, t_fixed = problem.split('to')
+                euler_home = \
+                    f"/home/alicia/data_personal/registered/euler_transformed_{ds_name}"
+                euler_path = f"{euler_home}/{t_moving}to{t_fixed}/result.nrrd"
+
+                if f'{ds_name}/{problem}' not in elastix_failures:
+                    if euler_path:
+                        t_fixed_4 = t_fixed.zfill(4)
+                        ds_path = locate_directory(ds_name)
+                        fixed_image_path = glob.glob(
+                            f'{ds_path}/NRRD_filtered/*_t{t_fixed_4}_ch2.nrrd'
+                        )[0]
+                        fixed_image_T = get_image_T(fixed_image_path)
+                        fixed_image_median = np.median(fixed_image_T)
+                        moving_image_T = get_image_T(euler_path)
+                        moving_image_median = np.median(moving_image_T)
+
+                        resized_fixed_image_xyz = crop(fixed_image_T,
+                                    fixed_image_median)
+                        resized_moving_image_xyz = crop(moving_image_T,
+                                    moving_image_median)
+
+                        hdf5_m_file.create_dataset(f'{t_moving}to{t_fixed}',
+                                data = resized_moving_image_xyz)
+                        hdf5_f_file.create_dataset(f'{t_moving}to{t_fixed}',
+                                data = resized_fixed_image_xyz)
+
+            hdf5_m_file.close()
+            hdf5_f_file.close()
+
+
 def preprocess(downsample_factor,
                resolution_factor,
                x_translation_range,
@@ -126,6 +244,15 @@ def preprocess(downsample_factor,
         hdf5_f_file.close()
 
 
+def crop(image_T, image_median):
+
+    filtered_image_T = filter_image(image_T, image_median)
+    filtered_image_CM = get_image_CM(filtered_image_T)
+
+    return get_cropped_image(image_T, filtered_image_CM,
+            -1).astype(np.float32)
+
+
 def filter_and_crop(image_T, image_median):
 
     filtered_image_T = filter_image(image_T, image_median)
@@ -144,11 +271,12 @@ def filter_image(image, threshold):
 
 def get_registration_problems():
 
+    source_path = '/data1/jungsoo/data/2023-01-16-reg-data/h5_resize'
     registration_problems = dict()
     for ds_type, ds_names in DATASETS_SPLIT_DICT.items():
         for ds_name in ds_names:
             print(ds_name)
-            src_file = f'{SOURCE_PATH}/{ds_type}/{ds_name}'
+            src_file = f'{source_path}/{ds_type}/{ds_name}'
             with h5py.File(f'{src_file}/fixed_images.h5', 'r') as f:
                 problems = list(f.keys())
             registration_problems[f'{ds_type}/{ds_name}'] = problems
@@ -160,21 +288,22 @@ def get_registration_problems():
 
 
 if __name__ == "__main__":
-    resolution_factor = 4
-    x_translation_range = np.linspace(-0.25, 0.25, int(100/resolution_factor),
+    resolution_factor = 1
+    x_translation_range = np.linspace(-1, 1, int(100/resolution_factor),
             dtype=np.float32)
-    y_translation_range = np.linspace(-0.25, 0.25, int(100/resolution_factor),
+    y_translation_range = np.linspace(-1, 1, int(100/resolution_factor),
             dtype=np.float32)
-    theta_rotation_range = np.linspace(0, 360, int(360/1),
+    theta_rotation_range = np.linspace(0, 360, int(360/resolution_factor),
             dtype=np.float32)
     z_translation_range = range(-50, 50)
-    batch_size = 50
+    batch_size = 200
     device_name = torch.device("cuda:1")
-    downsample_factor = 8
-    eulergpu_version = 'd8_r4_xy0.25_theta1'
+    downsample_factor = 1
+    eulergpu_version = 'd1_r1_xy1_v2'
     save_directory = \
         f'/home/alicia/data_personal/regnet_dataset/2023-01-16-eulerGPU-ddf/{eulergpu_version}'
-    preprocess(downsample_factor, resolution_factor, x_translation_range,
+    '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
-        batch_size, device_name, save_directory)
+        batch_size, device_name, save_directory)'''
+    preprocess_raw()
 
