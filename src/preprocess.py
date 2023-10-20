@@ -5,7 +5,7 @@ from euler_gpu.grid_search import grid_search
 from euler_gpu.preprocess import initialize, max_intensity_projection_and_downsample
 from euler_gpu.transform import transform_image_3d, translate_along_z
 from tqdm import tqdm
-from util import DATASETS_SPLIT_DICT, get_image_T, get_cropped_image, get_image_CM, locate_directory
+from util import DATASETS_SPLIT_DICT, get_image_T, get_cropped_image, get_image_CM, locate_directory, calculate_gncc
 import glob
 import h5py
 import json
@@ -37,7 +37,7 @@ def preprocess_raw():
 
         dataset_path = locate_directory(dataset_name)
 
-        for problem in problems:
+        for problem in tqdm(problems):
 
             t_moving, t_fixed = problem.split('to')
             t_moving_4 = t_moving.zfill(4)
@@ -68,7 +68,7 @@ def preprocess_raw():
         hdf5_f_file.close()
 
 
-def preprocess_elastix():
+def preprocess_euler_elastix():
 
     """Preprocess a selected pairs of raw fixed and moving images from each
     dataset (e.g. 'train/2022-07-26-01', 'test/2022-04-14-04'); then assemble
@@ -130,6 +130,298 @@ def preprocess_elastix():
 
             hdf5_m_file.close()
             hdf5_f_file.close()
+
+
+def preprocess_euler_gpu(downsample_factor,
+               resolution_factor,
+               x_translation_range,
+               y_translation_range,
+               z_translation_range,
+               theta_rotation_range,
+               batch_size,
+               device_name):
+
+    with open('jungsoo_registration_problems.json', 'r') as f:
+        registration_problem_dict = json.load(f)
+
+    x_dim = 208
+    y_dim = 96
+    z_dim = 56
+
+    memory_dict_xy = initialize(
+                np.zeros((x_dim, y_dim)).astype(np.float32),
+                np.zeros((x_dim, y_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+    _memory_dict_xy = initialize(
+                np.zeros((x_dim, y_dim, z_dim)).astype(np.float32),
+                np.zeros((x_dim, y_dim, z_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+    memory_dict_xz = initialize(
+                np.zeros((x_dim, z_dim)).astype(np.float32),
+                np.zeros((x_dim, z_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+    _memory_dict_xz = initialize(
+                np.zeros((x_dim, z_dim, y_dim)).astype(np.float32),
+                np.zeros((x_dim, z_dim, y_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+    memory_dict_yz = initialize(
+                np.zeros((y_dim, z_dim)).astype(np.float32),
+                np.zeros((y_dim, z_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+    _memory_dict_yz = initialize(
+                np.zeros((y_dim, z_dim, x_dim)).astype(np.float32),
+                np.zeros((y_dim, z_dim, x_dim)).astype(np.float32),
+                x_translation_range,
+                y_translation_range,
+                theta_rotation_range,
+                batch_size,
+                device_name
+    )
+
+    outcomes = dict()
+
+    #for dataset_type_n_name, problems in registration_problem_dict.items():
+    for dataset_type_n_name, problems in \
+            {'train/2022-01-09-01': ['102to675','104to288']}.items():
+
+        dataset_type, dataset_name = dataset_type_n_name.split('/')
+
+        dataset_path = locate_directory(dataset_name)
+
+        for problem in tqdm(problems):
+
+            outcomes[f"{dataset_name}/{problem}"] = dict()
+
+            t_moving, t_fixed = problem.split('to')
+            t_moving_4 = t_moving.zfill(4)
+            t_fixed_4 = t_fixed.zfill(4)
+            fixed_image_path = glob.glob(
+                    f'{dataset_path}/NRRD_filtered/*_t{t_fixed_4}_ch2.nrrd'
+            )[0]
+            moving_image_path = glob.glob(
+                    f'{dataset_path}/NRRD_filtered/*_t{t_moving_4}_ch2.nrrd'
+            )[0]
+
+            fixed_image_T = get_image_T(fixed_image_path)
+            fixed_image_median = np.median(fixed_image_T)
+            moving_image_T = get_image_T(moving_image_path)
+            moving_image_median = np.median(moving_image_T)
+
+            resized_fixed_image_xyz = filter_and_crop(fixed_image_T,
+                        fixed_image_median)
+            resized_moving_image_xyz = filter_and_crop(moving_image_T,
+                        moving_image_median)
+
+            # project onto the x-y plane along the z axis with the maximum value
+            downsampled_resized_fixed_image_xy = \
+                    max_intensity_projection_and_downsample(
+                            resized_fixed_image_xyz,
+                            downsample_factor,
+                            projection_axis=2).astype(np.float32)
+            downsampled_resized_moving_image_xy = \
+                    max_intensity_projection_and_downsample(
+                            resized_moving_image_xyz,
+                            downsample_factor,
+                            projection_axis=2).astype(np.float32)
+
+            # update the memory dictionary for grid search on x-y image
+            memory_dict_xy["fixed_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_fixed_image_xy,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+            memory_dict_xy["moving_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_moving_image_xy,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
+            # search optimal parameters with projected image on the x-y plane
+            best_score_xy, best_transformation_xy = grid_search(memory_dict_xy)
+            outcomes[f"{dataset_name}/{problem}"]["x-y_score_best"] = best_score_xy.item()
+
+            print(f"x-y score (best): {best_score_xy}")
+            print(f"best_transformation_xy: {best_transformation_xy}")
+            # transform the 3d image with the searched parameters
+            transformed_moving_image_xyz_max2 = transform_image_3d(
+                        resized_moving_image_xyz,
+                        _memory_dict_xy,
+                        best_transformation_xy,
+                        device_name)
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(0),
+                    transformed_moving_image_xyz_max2.max(0)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["y-z_score_max2"] = gncc.item()
+            print(f"y-z score: {gncc}")
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(1),
+                    transformed_moving_image_xyz_max2.max(1)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["x-z_score_max2"] = gncc.item()
+            print(f"x-z score: {gncc}")
+
+            best_score_xyz_max2 = calculate_gncc(
+                    resized_fixed_image_xyz,
+                    transformed_moving_image_xyz_max2
+            )
+            outcomes[f"{dataset_name}/{problem}"]["full_image_score_max2"] = \
+                    gncc.item()
+            print(f"full image score: {best_score_xyz_max2}")
+
+            # project onto the x-z plane along the y axis with the maximum value
+            downsampled_resized_fixed_image_xz = \
+                        max_intensity_projection_and_downsample(
+                                resized_fixed_image_xyz,
+                                downsample_factor,
+                                projection_axis=1).astype(np.float32)
+
+            downsampled_resized_moving_image_xz = \
+                        max_intensity_projection_and_downsample(
+                                transformed_moving_image_xyz_max2,
+                                downsample_factor,
+                                projection_axis=1).astype(np.float32)
+
+            # update the memory dictionary for grid search on x-z image
+            memory_dict_xz["fixed_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_fixed_image_xz,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
+            memory_dict_xz["moving_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_moving_image_xz,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
+            memory_dict_xz['output_tensor'][:] = torch.zeros_like(
+                        memory_dict_xz["moving_images_repeated"],
+                        device=device_name,
+                        dtype=torch.float32)
+            print(f'\n')
+            # search optimal parameters with projected image on the x-y plane
+            best_score_xz, best_transformation_xz = grid_search(memory_dict_xz)
+            outcomes[f"{dataset_name}/{problem}"]["x-z_score_best"] = best_score_xz.item()
+            print(f"x-z score (best): {best_score_xz}")
+            print(f"best_transformation_xz: {best_transformation_xz}")
+            # transform the 3d image with the searched parameters
+            transformed_moving_image_xyz_max1 = transform_image_3d(
+                        transformed_moving_image_xyz_max2,
+                        _memory_dict,
+                        best_transformation_xz,
+                        device_name)
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(0),
+                    transformed_moving_image_xyz_max1.max(0)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["y-z_score_max1"] = gncc.item()
+            print(f"y-z score: {gncc}")
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(2),
+                    transformed_moving_image_xyz_max1.max(2)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["x-y_score_max1"] = gncc.item()
+            print(f"x-y score: {gncc}")
+
+            best_score_xyz_max1 = calculate_gncc(resized_fixed_image_xyz,
+                                            transformed_moving_image_xyz_max1)
+            outcomes[f"{dataset_name}/{problem}"]["full_image_score_max1"] = best_score_xyz_max1.item()
+            print(f"full image score: {best_score_xyz_max1}")
+
+            # project onto the y-z plane along the x axis with the maximum value
+            downsampled_resized_fixed_image_yz = \
+                        max_intensity_projection_and_downsample(
+                                resized_fixed_image_xyz,
+                                downsample_factor,
+                                projection_axis=0).astype(np.float32)
+            downsampled_resized_moving_image_yz = \
+                        max_intensity_projection_and_downsample(
+                                transformed_moving_image_xyz_max1,
+                                downsample_factor,
+                                projection_axis=0).astype(np.float32)
+
+            memory_dict_yz["fixed_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_fixed_image_yz,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
+            memory_dict_yz["moving_images_repeated"][:] = torch.tensor(
+                        downsampled_resized_moving_image_yz,
+                        device=device_name,
+                        dtype=torch.float32).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+
+            memory_dict_yz['output_tensor'][:] = torch.zeros_like(
+                        memory_dict_yz["moving_images_repeated"][:],
+                        device=device_name,
+                        dtype=torch.float32)
+            print(f'\n')
+            # search optimal parameters with projected image on the y-z plane
+            best_score_yz, best_transformation_yz = grid_search(memory_dict_yz)
+            outcomes[f"{dataset_name}/{problem}"]["y-z_score_best"] = best_score_yz.item()
+            print(f"y-z score (best): {best_score_yz}")
+            print(f"best_transformation_yz: {best_transformation_yz}")
+            # transform the 3d image with the searched parameters
+            transformed_moving_image_xyz_max0 = transform_image_3d(
+                        transformed_moving_image_xyz_max1,
+                        _memory_dict_yz,
+                        best_transformation_yz,
+                        device_name)
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(1),
+                    transformed_moving_image_xyz_max0.max(1)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["x-z_score_max0"] = gncc.item()
+            print(f"x-z score: {gncc}")
+            gncc = calculate_gncc(
+                    resized_fixed_image_xyz.max(2),
+                    transformed_moving_image_xyz_max0.max(2)
+            )
+            outcomes[f"{dataset_name}/{problem}"]["x-y_score_max0"] = \
+                    gncc.item()
+            print(f"x-y score: {gncc}")
+
+            best_score_xyz_max0 = calculate_gncc(resized_fixed_image_xyz,
+                                            transformed_moving_image_xyz_max0)
+            outcomes[f"{dataset_name}/{problem}"]["full_image_score_max0"] = \
+                    best_score_xyz_max0.item()
+            print(f"full image score: {best_score_xyz_max0}")
+
+            # search for the optimal dz translation
+            dz, gncc, final_moving_image_xyz = translate_along_z(
+                        z_translation_range,
+                        resized_fixed_image_xyz,
+                        transformed_moving_image_xyz_max0,
+                        moving_image_median)
+            final_score = calculate_gncc(resized_fixed_image_xyz,
+                        final_moving_image_xyz)
+            outcomes[f"{dataset_name}/{problem}"]["final_full_image_score"] = \
+                    final_score.item()
+            print(f"final_score: {final_score}")
+
+    with open(f"outcomes.json", "w") as f:
+        json.dump(outcomes, f, indent=4)
 
 
 def preprocess(downsample_factor,
@@ -305,5 +597,13 @@ if __name__ == "__main__":
     '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
         batch_size, device_name, save_directory)'''
-    preprocess_raw()
+    #preprocess_raw()
+    preprocess_euler_gpu(downsample_factor,
+               resolution_factor,
+               x_translation_range,
+               y_translation_range,
+               z_translation_range,
+               theta_rotation_range,
+               batch_size,
+               device_name)
 
