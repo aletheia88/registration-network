@@ -20,7 +20,8 @@ def preprocess_raw():
     """
     source_path = '/data1/jungsoo/data/2023-01-16-reg-data/h5_resize'
     save_directory = \
-        '/home/alicia/data_personal/regnet_dataset/2023-01-16_raw_crop-v1'
+        '/home/alicia/data_personal/regnet_dataset/2023-01-16_raw_crop-v1_size-v2'
+
     with open('jungsoo_registration_problems.json', 'r') as f:
         registration_problem_dict = json.load(f)
 
@@ -162,9 +163,9 @@ def preprocess_euler_gpu(downsample_factor,
     _memory_dict_xy = initialize(
                 np.zeros((x_dim, y_dim)).astype(np.float32),
                 np.zeros((x_dim, y_dim)).astype(np.float32),
-                x_translation_range,
-                y_translation_range,
-                theta_rotation_range,
+                np.zeros(z_dim),
+                np.zeros(z_dim),
+                np.zeros(z_dim),
                 z_dim,
                 device_name
     )
@@ -172,7 +173,7 @@ def preprocess_euler_gpu(downsample_factor,
                 np.zeros((x_dim, z_dim)).astype(np.float32),
                 np.zeros((x_dim, z_dim)).astype(np.float32),
                 x_translation_range,
-                y_translation_range,
+                z_translation_range,
                 theta_rotation_range,
                 batch_size,
                 device_name
@@ -180,17 +181,17 @@ def preprocess_euler_gpu(downsample_factor,
     _memory_dict_xz = initialize(
                 np.zeros((x_dim, z_dim)).astype(np.float32),
                 np.zeros((x_dim, z_dim)).astype(np.float32),
-                x_translation_range,
-                y_translation_range,
-                theta_rotation_range,
+                np.zeros(y_dim),
+                np.zeros(y_dim),
+                np.zeros(y_dim),
                 y_dim,
                 device_name
     )
     memory_dict_yz = initialize(
                 np.zeros((y_dim, z_dim)).astype(np.float32),
                 np.zeros((y_dim, z_dim)).astype(np.float32),
-                x_translation_range,
                 y_translation_range,
+                z_translation_range,
                 theta_rotation_range,
                 batch_size,
                 device_name
@@ -198,16 +199,18 @@ def preprocess_euler_gpu(downsample_factor,
     _memory_dict_yz = initialize(
                 np.zeros((y_dim, z_dim)).astype(np.float32),
                 np.zeros((y_dim, z_dim)).astype(np.float32),
-                x_translation_range,
-                y_translation_range,
-                theta_rotation_range,
+                np.zeros(x_dim),
+                np.zeros(x_dim),
+                np.zeros(x_dim),
                 x_dim,
                 device_name
     )
 
     outcomes = dict()
 
-    for dataset_type_n_name, problems in registration_problem_dict.items():
+    #for dataset_type_n_name, problems in registration_problem_dict.items():
+    for dataset_type_n_name, problems in {'train/2022-01-09-01':
+            ['102to675','104to288']}.items():
 
         dataset_type, dataset_name = dataset_type_n_name.split('/')
         save_path = f'{save_directory}/{dataset_type}/{dataset_name}'
@@ -487,7 +490,7 @@ def preprocess_euler_gpu(downsample_factor,
         hdf5_m_file.close()
         hdf5_f_file.close()
 
-    with open(f"outcomes.json", "w") as f:
+    with open(f"outcomes0.json", "w") as f:
         json.dump(outcomes, f, indent=4)
 
 
@@ -664,7 +667,8 @@ if __name__ == "__main__":
     '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
         batch_size, device_name, save_directory)'''
-    #preprocess_raw()
+    preprocess_raw()
+    '''
     preprocess_euler_gpu(downsample_factor,
                resolution_factor,
                x_translation_range,
@@ -672,5 +676,4 @@ if __name__ == "__main__":
                z_translation_range,
                theta_rotation_range,
                batch_size,
-               device_name)
-
+               device_name)'''
