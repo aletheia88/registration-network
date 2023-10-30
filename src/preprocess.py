@@ -14,13 +14,12 @@ import os
 import torch
 
 
-def preprocess_raw():
+def preprocess_raw(save_folder_name):
 
     """Preprocess (crop only) and generated pairs of fixed and moving images
     """
-    source_path = '/data1/jungsoo/data/2023-01-16-reg-data/h5_resize'
     save_directory = \
-        '/home/alicia/data_personal/regnet_dataset/2023-01-16_raw_crop-v1_size-v2'
+        f'/home/alicia/data_personal/regnet_dataset/{save_folder_name}'
 
     with open('jungsoo_registration_problems.json', 'r') as f:
         registration_problem_dict = json.load(f)
@@ -208,9 +207,9 @@ def preprocess_euler_gpu(downsample_factor,
 
     outcomes = dict()
 
-    #for dataset_type_n_name, problems in registration_problem_dict.items():
-    for dataset_type_n_name, problems in {'train/2022-01-09-01':
-            ['102to675','104to288']}.items():
+    for dataset_type_n_name, problems in registration_problem_dict.items():
+    #for dataset_type_n_name, problems in {'train/2022-01-09-01':
+    #        ['102to675','104to288']}.items():
 
         dataset_type, dataset_name = dataset_type_n_name.split('/')
         save_path = f'{save_directory}/{dataset_type}/{dataset_name}'
@@ -667,7 +666,7 @@ if __name__ == "__main__":
     '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
         batch_size, device_name, save_directory)'''
-    preprocess_raw()
+    preprocess_raw("raw_crop-unfilter_size-v2")
     '''
     preprocess_euler_gpu(downsample_factor,
                resolution_factor,
