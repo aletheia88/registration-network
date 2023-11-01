@@ -13,7 +13,8 @@ import yaml
 jl = Julia(compiled_modules=False)
 jl.eval('include("/home/alicia/notebook/register/adjust.jl")')
 julia_resize_func_new = jl.eval("adjust_image_cm")
-TARGET_DIM = (208, 96, 56)
+#TARGET_DIM = (208, 96, 56)
+TARGET_DIM = (290, 120, 64)
 manifest = {
         "train": ["/data1/prj_kfc/data_processed/2022-03-16-02_output",
             "/data1/prj_kfc/data_processed/2022-01-09-01_output",

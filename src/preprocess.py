@@ -1009,7 +1009,7 @@ def crop(image_T, image_median):
 def filter_and_crop(image_T, image_median):
 
     filtered_image_T = filter_image(image_T, image_median)
-    filtered_image_CM = get_image_CM(filtered_image_T)
+    filtered_image_CM = get_image_CM(image_T)
 
     return get_cropped_image(filtered_image_T, filtered_image_CM,
             -1).astype(np.float32)
@@ -1058,7 +1058,7 @@ if __name__ == "__main__":
     '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
         batch_size, device_name, save_directory)'''
-    #preprocess_raw("raw_crop-filter_size-v2")
+    preprocess_raw("raw_crop-filter_size-v2")
     '''
     preprocess_euler_gpu(downsample_factor,
                resolution_factor,
@@ -1068,7 +1068,9 @@ if __name__ == "__main__":
                theta_rotation_range,
                batch_size,
                device_name)'''
-    preprocess_euler_gpu_newranges(
+    """preprocess_euler_gpu_newranges(
                downsample_factor,
                batch_size,
                device_name)
+    """
+
