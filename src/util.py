@@ -69,6 +69,54 @@ DATASETS_SPLIT_DICT = {
         }
 
 
+def overlay_matrices(matrix1, matrix2, dim, contrast_factor=1, title="Image Overlay"):
+    """
+    Create a plot that overlays the MIPs of two matrices along a specified dimension.
+
+    Parameters:
+    - matrix1, matrix2 (np.array): 3D numpy arrays.
+    - dim (int): The dimension along which to compute and overlay the MIPs.
+    - contrast_factor (float): Factor by which to divide the maximum intensity 
+                               to increase the image contrast. Must be >= 1.
+    """
+    # Ensure the matrices are 3D
+    if matrix1.ndim != 3 or matrix2.ndim != 3:
+        raise ValueError("Input matrices must be 3D")
+
+    # Ensure contrast_factor is valid
+    if contrast_factor < 1:
+        raise ValueError("contrast_factor must be >= 1")
+
+    # Compute MIPs
+    mip1 = np.max(matrix1, dim)
+    mip2 = np.max(matrix2, dim)
+
+    # Ensure MIPs are 2D
+    if mip1.ndim != 2 or mip2.ndim != 2:
+        raise ValueError("MIPs must be 2D")
+
+    # Normalize MIPs to [0, 1] based on the adjusted maximum values
+    mip1_norm = mip1 / (np.max(mip1) / contrast_factor)
+    mip2_norm = mip2 / (np.max(mip2) / contrast_factor)
+
+    # Ensure values are clipped to [0, 1] after adjusting contrast
+    mip1_norm = np.clip(mip1_norm, 0, 1)
+    mip2_norm = np.clip(mip2_norm, 0, 1)
+
+    # Create an RGB image: R corresponds to mip1, G to mip2, B is kept 0
+    rgb_image = np.stack([mip1_norm, mip2_norm, np.zeros_like(mip1_norm)], axis=-1)
+
+    # Create a figure and axis for the plot
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # Plot the RGB image
+    ax.imshow(rgb_image, origin='lower')
+
+    # Add a title and show the plot
+    ax.set_title(title)
+    plt.show()
+
+
 def filter_image(image, threshold):
     filtered_image = image - threshold
     filtered_image[filtered_image < 0] = 0
