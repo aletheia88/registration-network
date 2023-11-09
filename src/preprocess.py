@@ -1,9 +1,9 @@
-"""Utilities for preprocessing given image pairs by doing Euler transformation
-on them"""
+"""Utilities for preprocessing given image pairs"""
 
 from euler_gpu.grid_search import grid_search
 from euler_gpu.preprocess import initialize, max_intensity_projection_and_downsample
 from euler_gpu.transform import transform_image_3d, translate_along_z
+from julia.api import Julia
 from tqdm import tqdm
 from util import DATASETS_SPLIT_DICT, get_image_T, get_cropped_image, get_image_CM, locate_directory, calculate_gncc
 import glob
@@ -11,7 +11,60 @@ import h5py
 import json
 import numpy as np
 import os
+import subprocess
 import torch
+
+jl = Julia(compiled_modules=False)
+jl.eval('include("/home/alicia/notebook/register/modify_elastix_parameters.jl")')
+from julia import Main
+
+def affine_transform_image(ds_date,
+                          t_moving,
+                          t_fixed,
+                          nrrd_type='filtered',
+                          ch_num=2,
+                          ds_path=None):
+
+
+    modify_parameters = jl.eval("modify_parameter_file")
+
+    if ds_path == None:
+        neuropal_dir = '/home/alicia/data_prj_neuropal/data_processed'
+        non_neuropal_dir = '/home/alicia/data_prj_kfc/data_processed'
+        ds_path = locate_directory(ds_date)
+
+    # directory where to extract the parameters for running transformix
+    params_path = \
+        f"{ds_path}/Registered/{t_moving}to{t_fixed}/TransformParameters.1.txt"
+
+    # check if the parameter file exists
+    if os.path.isfile(params_path):
+
+        # directory where saves the affine-transformed images
+        base = f"/home/alicia/data_personal/registered/affine_transformed_roi_{ds_date}"
+        problem_path = f"{base}/{t_moving}to{t_fixed}"
+        t_moving_4 = str(t_moving).zfill(4)
+
+        image_path = glob.glob(
+                    f"{ds_path}/NRRD_{nrrd_type}/{ds_date}*_t{t_moving_4}_ch{ch_num}.nrrd"
+                )[0]
+        roi_image_path = f"{ds_path}/img_roi_watershed/{t_moving}.nrrd"
+        roi_params_path = f"{problem_path}/TransformParameters.1.txt"
+
+        julia_dict = Main.eval('Dict("FinalBSplineInterpolationOrder" => 0, "DefaultPixelValue" => 0)')
+        modify_parameters(params_path, roi_params_path, julia_dict)
+
+        commands = [
+                f"mkdir {base}",
+                f"mkdir {problem_path}",
+                f"transformix -out {problem_path} -tp {roi_params_path} -in {roi_image_path}"
+        ]
+        for command in commands:
+            subprocess.run(command, shell=True)
+        print(f"Affine-transformed image generated!\nFind it at {problem_path}")
+        return f"{problem_path}/result.nrrd"
+    else:
+        return False
 
 
 def preprocess_raw(save_folder_name):
@@ -102,12 +155,12 @@ def preprocess_euler_elastix():
 
             for problem in problems:
                 t_moving, t_fixed = problem.split('to')
-                euler_home = \
+                base = \
                     f"/home/alicia/data_personal/registered/euler_transformed_{ds_name}"
-                euler_path = f"{euler_home}/{t_moving}to{t_fixed}/result.nrrd"
+                problem_path = f"{base}/{t_moving}to{t_fixed}/result.nrrd"
 
                 if f'{ds_name}/{problem}' not in elastix_failures:
-                    if euler_path:
+                    if problem_path:
                         t_fixed_4 = t_fixed.zfill(4)
                         ds_path = locate_directory(ds_name)
                         fixed_image_path = glob.glob(
@@ -115,7 +168,7 @@ def preprocess_euler_elastix():
                         )[0]
                         fixed_image_T = get_image_T(fixed_image_path)
                         fixed_image_median = np.median(fixed_image_T)
-                        moving_image_T = get_image_T(euler_path)
+                        moving_image_T = get_image_T(problem_path)
                         moving_image_median = np.median(moving_image_T)
 
                         resized_fixed_image_xyz = crop(fixed_image_T,
@@ -1008,14 +1061,15 @@ def crop(image_T, image_median):
 
 def filter_and_crop(image_T, image_median):
 
-    filtered_image_T = filter_image(image_T, image_median)
     filtered_image_CM = get_image_CM(image_T)
+    filtered_image_T = filter_image(image_T, image_median)
 
     return get_cropped_image(filtered_image_T, filtered_image_CM,
             -1).astype(np.float32)
 
 
 def filter_image(image, threshold):
+
     filtered_image = image - threshold
     filtered_image[filtered_image < 0] = 0
 
@@ -1041,6 +1095,7 @@ def get_registration_problems():
 
 
 if __name__ == "__main__":
+
     resolution_factor = 1
     x_translation_range = np.linspace(-1, 1, int(100/resolution_factor),
             dtype=np.float32)
@@ -1055,10 +1110,12 @@ if __name__ == "__main__":
     eulergpu_version = 'd1_r1_xy1_v2'
     save_directory = \
         f'/home/alicia/data_personal/regnet_dataset/2023-01-16-eulerGPU-ddf/{eulergpu_version}'
+
+    #preprocess_raw("raw_crop-filter_size-v1")
+
     '''preprocess(downsample_factor, resolution_factor, x_translation_range,
         y_translation_range, z_translation_range, theta_rotation_range,
         batch_size, device_name, save_directory)'''
-    preprocess_raw("raw_crop-filter_size-v2")
     '''
     preprocess_euler_gpu(downsample_factor,
                resolution_factor,
@@ -1073,4 +1130,12 @@ if __name__ == "__main__":
                batch_size,
                device_name)
     """
-
+    ds_date = "2022-04-14-04"
+    t_moving = "1118"
+    t_fixed = "1535"
+    affine_transform_image(ds_date,
+                          t_moving,
+                          t_fixed,
+                          nrrd_type='filtered',
+                          ch_num=2,
+                          ds_path=None)
